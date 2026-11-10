@@ -2,7 +2,7 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
-// CLI:  FileWheel --list <files…> | --run <action-id> <files…> | --login-on | --login-off
+// CLI:  Rota --list <files…> | --run <action-id> <files…> | --login-on | --login-off
 let args = CommandLine.arguments
 if args.count == 2, args[1] == "--login-on" || args[1] == "--login-off" {
     do {
@@ -11,7 +11,7 @@ if args.count == 2, args[1] == "--login-on" || args[1] == "--login-off" {
         exit(0)
     } catch { print("error:", error.localizedDescription); exit(1) }
 }
-// FileWheel --render <convert|tools|share|places> <out.png> <files…> — draws the wheel offscreen.
+// Rota --render <convert|tools|share|places> <out.png> <files…> — draws the wheel offscreen.
 if args.count >= 4, args[1] == "--render" {
     let key = WheelKey(rawValue: args[2]) ?? .convert
     let files = args.dropFirst(4).map { URL(fileURLWithPath: $0) }
@@ -28,7 +28,7 @@ if args.count >= 4, args[1] == "--render" {
     try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: args[3]))
     exit(0)
 }
-// FileWheel --settings-shot <tab 0-2> <out.png> — renders the Settings window offscreen.
+// Rota --settings-shot <tab 0-2> <out.png> — renders the Settings window offscreen.
 if args.count == 4, args[1] == "--settings-shot" {
     let app = NSApplication.shared
     app.setActivationPolicy(.prohibited)
@@ -71,11 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var status: NSStatusItem!
     var busy = 0
     var dragURLs: [URL] = []
-    let work = DispatchQueue(label: "filewheel.work", qos: .userInitiated)
+    let work = DispatchQueue(label: "rota.work", qos: .userInitiated)
 
     func applicationDidFinishLaunching(_ n: Notification) {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        status.button?.image = NSImage(systemSymbolName: "circle.dashed.inset.filled", accessibilityDescription: "Hot Wheel")
+        status.button?.image = NSImage(systemSymbolName: "circle.dashed.inset.filled", accessibilityDescription: "Rota")
         buildMenu()
 
         watcher.onKey = { [weak self] key, urls, p in
@@ -97,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if !UserDefaults.standard.bool(forKey: "welcomed2") {
             UserDefaults.standard.set(true, forKey: "welcomed2")
-            hud.show("Hot Wheel: drag files, tap ⇧ ⌃ ⌘ or ⌥", for: 5)
+            hud.show("Rota: drag files, tap ⇧ ⌃ ⌘ or ⌥", for: 5)
         }
     }
 
@@ -152,7 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         m.addItem(withTitle: "Show Log", action: #selector(showLog), keyEquivalent: "")
         m.addItem(.separator())
-        m.addItem(withTitle: "Quit Hot Wheel", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        m.addItem(withTitle: "Quit Rota", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         m.items.forEach { if $0.action != #selector(NSApplication.terminate(_:)) { $0.target = self } }
         status.menu = m
     }

@@ -2,10 +2,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "FileWheel",
+    name: "Rota",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "FileWheel", path: "Sources/FileWheel",
+        .executableTarget(name: "Rota", path: "Sources/Rota",
                           linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("PDFKit")])
     ]
 )

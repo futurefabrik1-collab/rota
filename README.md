@@ -1,4 +1,4 @@
-# Hot Wheel
+# Rota
 
 A free, open-source radial file wheel for macOS. Start dragging files, tap a modifier key, drop onto a slice.
 
@@ -15,7 +15,7 @@ No Accessibility permission needed. Lives in the menu bar.
 
 ## Install
 
-Download the DMG from [Releases](../../releases), drag **Hot Wheel** to Applications.
+Download the DMG from [Releases](../../releases), drag **Rota** to Applications.
 The build is ad-hoc signed, not notarized: on first launch right-click the app → **Open**, or allow it under System Settings → Privacy & Security.
 
 Optional helpers for the full set of conversions (via [Homebrew](https://brew.sh)):
@@ -31,7 +31,7 @@ Settings → General shows which helpers were found.
 Requires macOS 14+ and Xcode / Swift 5.9+.
 
 ```bash
-./build.sh            # builds build/Hot Wheel.app
+./build.sh            # builds build/Rota.app
 ./build.sh --install  # also installs to ~/Applications and launches
 ```
 

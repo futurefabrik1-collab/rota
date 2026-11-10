@@ -87,7 +87,7 @@ enum Out {
 
     static func temp(_ ext: String) -> URL {
         FileManager.default.temporaryDirectory
-            .appendingPathComponent("filewheel-\(UUID().uuidString)").appendingPathExtension(ext)
+            .appendingPathComponent("rota-\(UUID().uuidString)").appendingPathExtension(ext)
     }
 
     /// Deletes `out` and throws Skipped if it isn't smaller than `src`.
@@ -101,7 +101,7 @@ enum Out {
 
 enum Log {
     static let url = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Logs/FileWheel.log")
+        .appendingPathComponent("Library/Logs/Rota.log")
 
     static func write(_ s: String) {
         let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"

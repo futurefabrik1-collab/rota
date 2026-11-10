@@ -13,7 +13,7 @@ final class SettingsWindow {
         if window == nil {
             let host = NSHostingController(rootView: SettingsView(model: SettingsModel(onChange: { [weak self] in self?.onChange?() })))
             let w = NSWindow(contentViewController: host)
-            w.title = "Hot Wheel Settings"
+            w.title = "Rota Settings"
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.setContentSize(NSSize(width: 680, height: 560))
             w.isReleasedWhenClosed = false
@@ -323,7 +323,7 @@ struct GeneralTab: View {
                        isOn: Binding(get: { model.blurFit }, set: { model.blurFit = $0 }))
             }
             Section("System") {
-                Toggle("Open Hot Wheel at login", isOn: Binding(get: { model.openAtLogin }, set: { model.openAtLogin = $0 }))
+                Toggle("Open Rota at login", isOn: Binding(get: { model.openAtLogin }, set: { model.openAtLogin = $0 }))
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(tools, id: \.0) { t in
                         HStack(spacing: 6) {

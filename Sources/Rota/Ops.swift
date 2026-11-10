@@ -216,7 +216,7 @@ enum ImgX {
             return [out]
         }
         // ICNS: build a full .iconset (16–1024 px) and let iconutil pack it.
-        let set = FileManager.default.temporaryDirectory.appendingPathComponent("filewheel-\(UUID().uuidString).iconset")
+        let set = FileManager.default.temporaryDirectory.appendingPathComponent("rota-\(UUID().uuidString).iconset")
         try FileManager.default.createDirectory(at: set, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: set) }
         for (name, px) in [("16x16", 16), ("16x16@2x", 32), ("32x32", 32), ("32x32@2x", 64), ("128x128", 128),
@@ -477,7 +477,7 @@ enum PDFX {
     }()
 
     static func ocr(_ src: URL) throws -> [URL] {
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("filewheel-ocr-\(UUID().uuidString)")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("rota-ocr-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmp) }
         try Tools.run("gs", ["-q", "-dNOPAUSE", "-dBATCH", "-dSAFER", "-sDEVICE=png16m", "-r300",
