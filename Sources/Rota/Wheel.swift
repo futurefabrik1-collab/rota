@@ -1,48 +1,63 @@
 import AppKit
 import QuartzCore
 
-/// Polls mouse/modifier state (no Accessibility permission needed). Tapping ⇧ ⌃ ⌘ or ⌥ during a
-/// file drag opens that key's wheel; tapping a different key swaps it.
+/// Polls mouse/modifier state (no Accessibility permission needed). During a file drag, holding the
+/// gate (Settings > General, Fn by default) and tapping a wheel key opens that wheel; tapping another
+/// key swaps it (`Trigger.decide`). Idle, it only glances at the mouse button 4 times a second; it
+/// polls at 60 Hz only while the button is down.
 final class DragWatcher {
     /// urls is non-nil on the first key of a drag.
     var onKey: ((WheelKey, [URL]?, NSPoint) -> Void)?
     var onMouseUp: (() -> Void)?
 
+    static let idleInterval = 0.25, dragInterval = 1.0 / 60
     private var timer: Timer?
     private let dragPB = NSPasteboard(name: .drag)
     private var baseChange = 0
     private var wasDown = false
     private var lastFlags: NSEvent.ModifierFlags = []
-    private var fired = false
     private var current: WheelKey?
 
-    func start() {
-        let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.tick() }
+    func start() { schedule(Self.idleInterval) }
+
+    private func schedule(_ interval: TimeInterval) {
+        timer?.invalidate()
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.tick() }
+        t.tolerance = interval / 5
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
 
     private func tick() {
-        let down = NSEvent.pressedMouseButtons & 1 != 0
-        if down && !wasDown { baseChange = dragPB.changeCount; fired = false; current = nil }
-        if !down && wasDown { onMouseUp?(); fired = false; current = nil }
-        wasDown = down
+        guard NSEvent.pressedMouseButtons & 1 != 0 else {
+            if wasDown { wasDown = false; onMouseUp?(); schedule(Self.idleInterval) }
+            // A drag that starts after this changes the count; a click without a drag doesn't.
+            baseChange = dragPB.changeCount
+            current = nil
+            lastFlags = []
+            return
+        }
+        if !wasDown { wasDown = true; schedule(Self.dragInterval) }
 
-        let flags = NSEvent.modifierFlags.intersection([.shift, .control, .option, .command])
-        defer { lastFlags = flags }
-        guard down, flags != lastFlags, dragPB.changeCount != baseChange,
-              let key = WheelKey.allCases.first(where: { $0.flags == flags }), key != current else { return }
-
-        if !fired {
-            let urls = dragPB.readObjects(forClasses: [NSURL.self],
-                                          options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-            guard !urls.isEmpty else { return }
-            fired = true
-            current = key
-            onKey?(key, urls, NSEvent.mouseLocation)
-        } else {
+        let flags = NSEvent.modifierFlags
+        guard Trigger.held(flags) != Trigger.held(lastFlags) else { return }
+        let t = Trigger.decide(flags, previous: lastFlags, gate: Gate.current, keys: WheelKey.keys, current: current)
+        switch t {
+        case .none:
+            lastFlags = flags
+        case .swap(let key):
+            lastFlags = flags
             current = key
             onKey?(key, nil, NSEvent.mouseLocation)
+        case .open(let key):
+            // Not a file drag (yet): keep lastFlags so the next tick asks again.
+            guard dragPB.changeCount != baseChange else { return }
+            let urls = dragPB.readObjects(forClasses: [NSURL.self],
+                                          options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+            lastFlags = flags
+            guard !urls.isEmpty else { return }
+            current = key
+            onKey?(key, urls, NSEvent.mouseLocation)
         }
     }
 }
@@ -61,7 +76,7 @@ enum Palette {
         case .image: return (hex(0xFF5E62), hex(0xFFB15C))   // coral → apricot
         case .video: return (hex(0x7B61FF), hex(0xE85CFF))   // violet → orchid
         case .audio: return (hex(0x12C2E9), hex(0x5CF2B0))   // cyan → mint
-        case .pdf:   return (hex(0xFF3D6E), hex(0xFF8A5C))   // crimson → tangelo
+        case .pdf:   return (hex(0xFF3B5C), hex(0xFF7EB0))   // crimson → rose
         case .document: return (hex(0x3A7BFF), hex(0x5CC8FF)) // ink blue → sky
         case .slides: return (hex(0xFF8A00), hex(0xFFD15C))   // amber → gold
         case .sheet: return (hex(0x1FB36B), hex(0xA6E35C))    // green → lime
@@ -69,8 +84,8 @@ enum Palette {
         case .other: return (hex(0x4F8CFF), hex(0x9C7BFF))   // azure → iris
         }
     }
-    static let glass = NSColor(srgbRed: 0.075, green: 0.075, blue: 0.09, alpha: 0.88).cgColor
-    static let hairline = NSColor(white: 1, alpha: 0.09).cgColor
+    static let glass = NSColor(srgbRed: 0.07, green: 0.07, blue: 0.085, alpha: 0.9).cgColor
+    static let hairline = NSColor(white: 1, alpha: 0.11).cgColor
 }
 
 // MARK: - Panel
@@ -91,17 +106,22 @@ final class WheelPanel: NSPanel {
     }
 
     func show(page: WheelPage, key: WheelKey, urls: [URL], at p: NSPoint) {
-        let s = WheelView.size
-        var origin = NSPoint(x: p.x - s / 2, y: p.y - s / 2)
-        if let screen = NSScreen.screens.first(where: { NSMouseInRect(p, $0.frame, false) }) {
-            let f = screen.frame
-            origin.x = min(max(origin.x, f.minX - 60), f.maxX - s + 60)
-            origin.y = min(max(origin.y, f.minY - 60), f.maxY - s + 60)
-        }
-        setFrameOrigin(origin)
+        // Room for the largest of the four wheels, so a swap mid-drag stays on screen too.
+        let r = WheelKey.allCases.map { WheelView.outerRadius(Actions.page(for: $0, urls: urls)) }.max() ?? 0
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(p, $0.frame, false) }) ?? NSScreen.main
+        setFrameOrigin(screen.map { Self.origin(centre: p, radius: r, in: $0.visibleFrame) }
+                       ?? NSPoint(x: p.x - WheelView.size / 2, y: p.y - WheelView.size / 2))
         alphaValue = 1
         orderFrontRegardless()
         wheel.present(page: page, key: key, colors: Palette.colors(for: urls), count: urls.count)
+    }
+
+    /// Panel origin that centres the wheel on p, moved in just enough that a wheel of radius r stays
+    /// inside the screen's visible frame (clear of the menu bar, the notch and the Dock).
+    static func origin(centre p: NSPoint, radius r: CGFloat, in f: NSRect) -> NSPoint {
+        let m = r + 6, s = WheelView.size
+        return NSPoint(x: min(max(p.x, f.minX + m), f.maxX - m) - s / 2,
+                       y: min(max(p.y, f.minY + m), f.maxY - m) - s / 2)
     }
 
     func hide(picked: Bool = false) {
@@ -113,8 +133,8 @@ final class WheelPanel: NSPanel {
 // MARK: - Wheel
 
 final class WheelView: NSView {
-    static let size: CGFloat = 600
-    static let band: CGFloat = 32      // half the ring thickness
+    static let size: CGFloat = 620
+    static let band: CGFloat = 34      // half the ring thickness
     static let ringGap: CGFloat = 5
     static let slice: CGFloat = 70     // arc length per slice at the ring's mid radius
 
@@ -210,8 +230,8 @@ final class WheelView: NSView {
         disk.shadowRadius = 12
 
         accentRim.fillColor = nil
-        accentRim.lineWidth = 1.5
-        accentRim.opacity = 0.55
+        accentRim.lineWidth = 1.25
+        accentRim.opacity = 0.6
 
         hiGradient.type = .axial
         hiGradient.startPoint = CGPoint(x: 0.3, y: 1)
@@ -221,8 +241,8 @@ final class WheelView: NSView {
         hiMask.lineJoin = .round
         hiGradient.mask = hiMask
         highlight.addSublayer(hiGradient)
-        highlight.shadowOpacity = 0.7
-        highlight.shadowRadius = 16
+        highlight.shadowOpacity = 0.55
+        highlight.shadowRadius = 14
         highlight.shadowOffset = .zero
         highlight.opacity = 0
 
@@ -231,9 +251,9 @@ final class WheelView: NSView {
             l.isWrapped = true
             l.truncationMode = .end
         }
-        titleLayer.frame = CGRect(x: c.x - 60, y: c.y + 18, width: 120, height: 14)
-        detailLayer.frame = CGRect(x: c.x - 62, y: c.y - 24, width: 124, height: 40)
-        legend.frame = CGRect(x: c.x - 60, y: c.y - 50, width: 120, height: 16)
+        titleLayer.frame = CGRect(x: c.x - 60, y: c.y + 22, width: 120, height: 14)
+        detailLayer.frame = CGRect(x: c.x - 62, y: c.y - 30, width: 124, height: 48)
+        legend.frame = CGRect(x: c.x - 60, y: c.y - 52, width: 120, height: 16)
 
         [ring, sheen, rim, disk, accentRim, highlight, pageLayer, titleLayer, detailLayer, legend].forEach(root.addSublayer)
         applyGeometry(animated: false)
@@ -244,22 +264,29 @@ final class WheelView: NSView {
         [titleLayer, detailLayer, legend].forEach { $0.contentsScale = scale }
     }
 
-    private func fitRadii() {
+    /// Mid radius of each ring and the centre disk's radius for these rings.
+    static func radii(_ rings: [[Action]]) -> (mids: [CGFloat], disk: CGFloat) {
         let n0 = CGFloat(rings.first?.count ?? 0)
-        let m0 = min(max(126, n0 * Self.slice / (2 * .pi)), 205)
+        let m0 = min(max(126, n0 * slice / (2 * .pi)), 205)
         var m1 = m0
         if rings.count > 1 {
-            m1 = min(max(m0 + 2 * Self.band + Self.ringGap, CGFloat(rings[1].count) * Self.slice / (2 * .pi)), 240)
+            m1 = min(max(m0 + 2 * band + ringGap, CGFloat(rings[1].count) * slice / (2 * .pi)), 240)
         }
-        mids = [m0, m1]
-        diskR = min(m0 - Self.band - 12, 96)
+        return ([m0, m1], min(m0 - band - 8, 96))
     }
+
+    static func outerRadius(_ page: WheelPage) -> CGFloat {
+        let rings = page.rings.filter { !$0.isEmpty }
+        return radii(rings).mids[rings.count > 1 ? 1 : 0] + band
+    }
+
+    private func fitRadii() { (mids, diskR) = Self.radii(rings) }
 
     private func applyGeometry(animated: Bool) {
         fitRadii()
         CATransaction.begin()
         if animated {
-            CATransaction.setAnimationDuration(0.26)
+            CATransaction.setAnimationDuration(0.2)
             CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1))
         } else {
             CATransaction.setDisableActions(true)
@@ -299,10 +326,10 @@ final class WheelView: NSView {
 
         let pop = CASpringAnimation(keyPath: "transform.scale")
         pop.fromValue = 0.78; pop.toValue = 1
-        pop.damping = 17; pop.stiffness = 320; pop.mass = 0.8
+        pop.damping = 26; pop.stiffness = 480; pop.mass = 0.6
         pop.duration = pop.settlingDuration
         let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0; fade.toValue = 1; fade.duration = 0.14
+        fade.fromValue = 0; fade.toValue = 1; fade.duration = 0.1
         root.add(pop, forKey: "pop")
         root.add(fade, forKey: "fade")
         staggerLabels()
@@ -334,62 +361,151 @@ final class WheelView: NSView {
         o.toValue = 0
         let g = CAAnimationGroup()
         g.animations = [s, o]
-        g.duration = picked ? 0.22 : 0.13
+        g.duration = picked ? 0.18 : 0.1
         g.timingFunction = CAMediaTimingFunction(name: .easeIn)
         g.fillMode = .forwards
         g.isRemovedOnCompletion = false
         if picked {
             let flash = CABasicAnimation(keyPath: "opacity")
-            flash.fromValue = 1; flash.toValue = 0.35; flash.duration = 0.09; flash.autoreverses = true
+            flash.fromValue = 1; flash.toValue = 0.35; flash.duration = 0.07; flash.autoreverses = true
             highlight.add(flash, forKey: "flash")
-            g.beginTime = CACurrentMediaTime() + 0.08
+            g.beginTime = CACurrentMediaTime() + 0.06
         }
         root.add(g, forKey: "out")
         CATransaction.commit()
     }
 
-    /// A label sized to the room it has: on the sides of the ring horizontal text runs across
-    /// the band, at the top and bottom along it, so the allowed width depends on the angle.
-    private func makeLabel(_ a: Action, at p: CGPoint, angle: CGFloat, ring r: Int) -> CALayer {
-        let usableBand = 2 * Self.band - 12
-        let n = CGFloat(max(rings[r].count, 1))
-        let chord = n > 1 ? 2 * mids[r] * sin(.pi / n) - 8 : 140
-        let cosA = abs(cos(angle))
-        let maxW = max(30, min(chord, cosA < 0.08 ? chord : usableBand / cosA, 88))
+    // MARK: Labels
 
-        var size: CGFloat = 9
-        func styled(_ t: String, _ s: CGFloat) -> NSAttributedString {
-            NSAttributedString(string: t, attributes: [
-                .font: NSFont.systemFont(ofSize: s, weight: .semibold), .foregroundColor: NSColor.white, .kern: s * 0.07])
-        }
-        var title = a.title.uppercased()
-        var str = styled(title, size)
-        while str.size().width > maxW && size > 7 { size -= 0.5; str = styled(title, size) }
-        while str.size().width > maxW && title.count > 3 {
-            title = String(title.dropLast(title.hasSuffix("…") ? 2 : 1)) + "…"
-            str = styled(title, size)
-        }
+    /// A label is an icon over one line of text.
+    static let iconSide: CGFloat = 16, textHeight: CGFloat = 12, labelHeight: CGFloat = 29
+    /// Ink keeps this far inside its ring.
+    static let labelInset: CGFloat = 3
 
-        let w = max(maxW, 40)
+    static func styled(_ t: String, _ s: CGFloat) -> NSAttributedString {
+        NSAttributedString(string: t, attributes: [
+            .font: NSFont.systemFont(ofSize: s, weight: .semibold), .foregroundColor: NSColor.white, .kern: s * 0.05])
+    }
+
+    static func textWidth(_ t: String, _ s: CGFloat) -> CGFloat { ceil(styled(t, s).size().width) + 2 }
+
+    private func angle(ring r: Int, index i: Int) -> CGFloat { (90 - CGFloat(i) * step(r)) * .pi / 180 }
+
+    /// A label's ink at slot (r, i), relative to the centre: the text line and the icon above it,
+    /// slid up or down so the ink sits evenly about the ring's mid line.
+    private func ink(ring r: Int, index i: Int, width w: CGFloat) -> [CGRect] {
+        let a = angle(ring: r, index: i), m = mids[r]
+        let x = m * cos(a), y = m * sin(a)
+        func rects(_ dy: CGFloat) -> [CGRect] {
+            let y0 = y + dy - Self.labelHeight / 2
+            return [CGRect(x: x - w / 2, y: y0, width: w, height: Self.textHeight),
+                    CGRect(x: x - Self.iconSide / 2, y: y0 + Self.labelHeight - Self.iconSide, width: Self.iconSide, height: Self.iconSide)]
+        }
+        // Near 3 and 9 o'clock height barely moves the ink radially: keep the stack centred there.
+        guard abs(sin(a)) > 0.25 else { return rects(0) }
+        var lo: CGFloat = -12, hi: CGFloat = 12
+        for _ in 0..<16 {
+            let mid = (lo + hi) / 2, (near, far) = Self.radialSpan(rects(mid))
+            if (near + far > 2 * m) == (sin(a) > 0) { hi = mid } else { lo = mid }
+        }
+        return rects((lo + hi) / 2)
+    }
+
+    /// The nearest and farthest any of the rects comes to the centre.
+    private static func radialSpan(_ rects: [CGRect]) -> (near: CGFloat, far: CGFloat) {
+        (rects.map { b in hypot(min(max(0, b.minX), b.maxX), min(max(0, b.minY), b.maxY)) }.min()!,
+         rects.flatMap { b in [b.minX, b.maxX].flatMap { x in [b.minY, b.maxY].map { hypot(x, $0) } } }.max()!)
+    }
+
+    /// How far the ink pokes out of ring r (inset included), or nil if it sits inside.
+    private func spill(_ rects: [CGRect], ring r: Int) -> String? {
+        let lo = mids[r] - Self.band + Self.labelInset, hi = mids[r] + Self.band - Self.labelInset
+        let (near, far) = Self.radialSpan(rects)
+        if near < lo { return String(format: "%.1f pt over the inner edge", lo - near) }
+        if far > hi { return String(format: "%.1f pt over the outer edge", far - hi) }
+        return nil
+    }
+
+    private static func overlap(_ a: [CGRect], _ b: [CGRect]) -> Bool {
+        a.contains { x in b.contains { x.insetBy(dx: -1.5, dy: -1.5).intersects($0) } }
+    }
+
+    /// One type size per ring, the largest (9 down to 7.5 pt) at which every label fits inside the ring
+    /// and clear of its neighbours; labels that still don't fit at 7.5 pt are shortened with "…".
+    private func fittedTitles(ring r: Int) -> (size: CGFloat, titles: [String]) {
+        let n = rings[r].count
+        func clash(_ i: Int, _ ws: [CGFloat]) -> Bool {
+            let me = ink(ring: r, index: i, width: ws[i])
+            if spill(me, ring: r) != nil { return true }
+            return Set([(i + n - 1) % n, (i + 1) % n]).subtracting([i])
+                .contains { Self.overlap(me, ink(ring: r, index: $0, width: ws[$0])) }
+        }
+        var titles = rings[r].map { $0.title.uppercased() }
+        for size in stride(from: CGFloat(9), through: 7.5, by: -0.5) {
+            var ws = titles.map { Self.textWidth($0, size) }
+            if !ws.indices.contains(where: { clash($0, ws) }) { return (size, titles) }
+            guard size == 7.5 else { continue }
+            while let i = ws.indices.filter({ clash($0, ws) && titles[$0].count > 3 }).max(by: { ws[$0] < ws[$1] }) {
+                titles[i] = String(titles[i].dropLast(titles[i].hasSuffix("…") ? 2 : 1)) + "…"
+                ws[i] = Self.textWidth(titles[i], size)
+            }
+            return (size, titles)
+        }
+        return (7.5, titles)
+    }
+
+    private func makeLabel(_ a: Action, title: String, size: CGFloat, ring r: Int, index i: Int) -> CALayer {
+        let tw = Self.textWidth(title, size), w = max(tw, Self.iconSide)
+        let t = ink(ring: r, index: i, width: tw)[0]
         let item = CALayer()
-        item.bounds = CGRect(x: 0, y: 0, width: w, height: 40)
-        item.position = p
+        item.bounds = CGRect(x: 0, y: 0, width: w, height: Self.labelHeight)
+        item.position = CGPoint(x: c.x + t.midX, y: c.y + t.minY + Self.labelHeight / 2)
+        item.name = title
         let icon = CALayer()
-        icon.frame = CGRect(x: (w - 20) / 2, y: 18, width: 20, height: 18)
+        icon.frame = CGRect(x: (w - Self.iconSide) / 2, y: Self.labelHeight - Self.iconSide, width: Self.iconSide, height: Self.iconSide)
         icon.contentsGravity = .resizeAspect
         icon.contents = NSImage(systemSymbolName: a.symbol, accessibilityDescription: a.title)?
-            .withSymbolConfiguration(.init(pointSize: 15, weight: .regular).applying(.init(paletteColors: [.white])))
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .regular).applying(.init(paletteColors: [.white])))
             ?? NSImage(systemSymbolName: "circle", accessibilityDescription: nil)
         icon.contentsScale = scale
         let text = CATextLayer()
-        text.frame = CGRect(x: 0, y: 2, width: w, height: 13)
+        text.frame = CGRect(x: (w - tw) / 2, y: 0, width: tw, height: Self.textHeight)
         text.alignmentMode = .center
         text.contentsScale = scale
-        text.string = str
+        text.string = Self.styled(title, size)
         item.addSublayer(icon)
         item.addSublayer(text)
-        item.opacity = 0.78
+        item.opacity = Self.labelRest
         return item
+    }
+
+    static let labelRest: Float = 0.8
+
+    /// Every label that spills out of its ring or overlaps another, as text; empty when the layout is
+    /// clean. `Rota --selftest` runs this over every wheel.
+    func layoutProblems() -> [String] {
+        var out: [String] = [], all: [(String, [CGRect])] = []
+        for (r, row) in labels.enumerated() {
+            for l in row {
+                // Measured from the layers as drawn (icon and text), not from the layout's own maths.
+                let rects = (l.sublayers ?? []).map { l.convert($0.frame, to: root).offsetBy(dx: -c.x, dy: -c.y) }
+                if let s = spill(rects, ring: r) { out.append("\(page.title) ring \(r + 1) \(l.name ?? "?"): \(s)") }
+                all.append((l.name ?? "?", rects))
+            }
+        }
+        for i in all.indices { for j in all.indices where j > i && Self.overlap(all[i].1, all[j].1) {
+            out.append("\(page.title): \(all[i].0) overlaps \(all[j].0)")
+        } }
+        return out
+    }
+
+    /// Labels drawn shortened ("…") or below the 9 pt default, for the selftest's notes.
+    var labelNotes: [String] {
+        labels.flatMap { $0 }.compactMap { l in
+            guard let t = l.sublayers?.compactMap({ $0 as? CATextLayer }).first?.string as? NSAttributedString,
+                  let f = t.attribute(.font, at: 0, effectiveRange: nil) as? NSFont else { return nil }
+            return f.pointSize < 9 || t.string.hasSuffix("…") ? "\(t.string) \(f.pointSize) pt" : nil
+        }
     }
 
     /// Builds the slices and swaps them in. The old set turns away before the new one
@@ -405,14 +521,9 @@ final class WheelView: NSView {
         page.frame = bounds
         labels = []
         for (r, acts) in rings.enumerated() {
-            let st = step(r)
-            var row: [CALayer] = []
-            for (i, a) in acts.enumerated() {
-                let ang = (90 - CGFloat(i) * st) * .pi / 180
-                let l = makeLabel(a, at: CGPoint(x: c.x + mids[r] * cos(ang), y: c.y + mids[r] * sin(ang)), angle: ang, ring: r)
-                page.addSublayer(l)
-                row.append(l)
-            }
+            let (size, titles) = fittedTitles(ring: r)
+            let row = acts.indices.map { makeLabel(acts[$0], title: titles[$0], size: size, ring: r, index: $0) }
+            row.forEach(page.addSublayer)
             labels.append(row)
         }
 
@@ -429,7 +540,7 @@ final class WheelView: NSView {
         let sc = CABasicAnimation(keyPath: "transform.scale"); sc.toValue = 0.9
         let op = CABasicAnimation(keyPath: "opacity"); op.toValue = 0
         out.animations = [rot, sc, op]
-        out.duration = 0.11
+        out.duration = 0.09
         out.timingFunction = CAMediaTimingFunction(name: .easeIn)
         out.fillMode = .forwards
         out.isRemovedOnCompletion = false
@@ -438,19 +549,19 @@ final class WheelView: NSView {
         old.add(out, forKey: "out")
         CATransaction.commit()
 
-        let t0 = CACurrentMediaTime() + 0.09
+        let t0 = CACurrentMediaTime() + 0.07
         let inRot = CASpringAnimation(keyPath: "transform.rotation.z")
         inRot.fromValue = -0.5 * dir; inRot.toValue = 0
-        inRot.damping = 18; inRot.stiffness = 260; inRot.mass = 0.8
+        inRot.damping = 26; inRot.stiffness = 420; inRot.mass = 0.6
         inRot.duration = inRot.settlingDuration
         let inOp = CABasicAnimation(keyPath: "opacity")
-        inOp.fromValue = 0; inOp.toValue = 1; inOp.duration = 0.16
+        inOp.fromValue = 0; inOp.toValue = 1; inOp.duration = 0.12
         for a in [inRot, inOp] as [CAAnimation] { a.beginTime = t0; a.fillMode = .backwards }
         page.add(inRot, forKey: "inRot")
         page.add(inOp, forKey: "inOp")
 
         let pulse = CABasicAnimation(keyPath: "opacity")
-        pulse.fromValue = 0.15; pulse.toValue = 0.55; pulse.duration = 0.35
+        pulse.fromValue = 0.15; pulse.toValue = 0.55; pulse.duration = 0.28
         accentRim.add(pulse, forKey: "pulse")
     }
 
@@ -459,11 +570,11 @@ final class WheelView: NSView {
         for (i, l) in labels.flatMap({ $0 }).enumerated() {
             let sc = CASpringAnimation(keyPath: "transform.scale")
             sc.fromValue = 0.55; sc.toValue = 1
-            sc.damping = 15; sc.stiffness = 300; sc.mass = 0.7
+            sc.damping = 24; sc.stiffness = 420; sc.mass = 0.6
             sc.duration = sc.settlingDuration
             let op = CABasicAnimation(keyPath: "opacity")
-            op.fromValue = 0; op.toValue = 0.78; op.duration = 0.18
-            for a in [sc, op] as [CAAnimation] { a.beginTime = now + 0.03 + Double(i) * 0.012; a.fillMode = .backwards }
+            op.fromValue = 0; op.toValue = Self.labelRest; op.duration = 0.12
+            for a in [sc, op] as [CAAnimation] { a.beginTime = now + 0.02 + Double(i) * 0.008; a.fillMode = .backwards }
             l.add(sc, forKey: "in"); l.add(op, forKey: "inOp")
         }
     }
@@ -493,7 +604,7 @@ final class WheelView: NSView {
 
     private func updateHover(from old: Slot?) {
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.16)
+        CATransaction.setAnimationDuration(0.12)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1))
         if let h = hovered, rings.indices.contains(h.ring), h.index < rings[h.ring].count {
             let target = -CGFloat(h.index) * step(h.ring) * .pi / 180
@@ -511,7 +622,7 @@ final class WheelView: NSView {
                 let to = hiAngle + d
                 let spin = CASpringAnimation(keyPath: "transform.rotation.z")
                 spin.fromValue = hiAngle; spin.toValue = to
-                spin.damping = 22; spin.stiffness = 420; spin.mass = 0.6
+                spin.damping = 28; spin.stiffness = 560; spin.mass = 0.5
                 spin.duration = spin.settlingDuration
                 CATransaction.begin(); CATransaction.setDisableActions(true)
                 highlight.setValue(to, forKeyPath: "transform.rotation.z")
@@ -529,7 +640,7 @@ final class WheelView: NSView {
             }
         } else {
             highlight.opacity = 0
-            labels.flatMap { $0 }.forEach { $0.opacity = 0.78; $0.transform = CATransform3DIdentity }
+            labels.flatMap { $0 }.forEach { $0.opacity = Self.labelRest; $0.transform = CATransform3DIdentity }
         }
         CATransaction.commit()
         updateCentre()
@@ -545,7 +656,7 @@ final class WheelView: NSView {
         para.alignment = .center
         para.lineSpacing = 1
         titleLayer.string = NSAttributedString(string: page.title.uppercased(), attributes: [
-            .font: NSFont.systemFont(ofSize: 9.5, weight: .bold), .foregroundColor: colors.1, .kern: 2.2,
+            .font: NSFont.systemFont(ofSize: 9, weight: .bold), .foregroundColor: colors.1, .kern: 1.8,
             .paragraphStyle: para])
 
         let detail = NSMutableAttributedString()
@@ -555,7 +666,7 @@ final class WheelView: NSView {
                 .paragraphStyle: para]))
         } else {
             detail.append(NSAttributedString(string: fileCount == 1 ? "1 file" : "\(fileCount) files", attributes: [
-                .font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 14, weight: .semibold), .foregroundColor: NSColor.white,
                 .paragraphStyle: para]))
             detail.append(NSAttributedString(string: rings.isEmpty ? "\nnothing here — try another key" : "\nrelease here to cancel",
                                              attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .regular),
@@ -567,7 +678,7 @@ final class WheelView: NSView {
         for (i, k) in WheelKey.allCases.enumerated() {
             if i > 0 { lg.append(NSAttributedString(string: "   ")) }
             lg.append(NSAttributedString(string: k.glyph, attributes: [
-                .font: NSFont.systemFont(ofSize: 12, weight: k == key ? .bold : .regular),
+                .font: NSFont.systemFont(ofSize: 11, weight: k == key ? .bold : .regular),
                 .foregroundColor: k == key ? colors.1 : NSColor(white: 1, alpha: 0.3)]))
         }
         lg.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: lg.length))

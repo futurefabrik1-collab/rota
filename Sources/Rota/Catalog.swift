@@ -10,17 +10,19 @@ struct WheelPage {
 
 /// The modifier keys a wheel can be assigned to.
 enum Modifier: String, CaseIterable, Identifiable {
-    case shift, command, control, option
+    case shift, command, control, option, function
     var id: String { rawValue }
     var flags: NSEvent.ModifierFlags {
         switch self { case .shift: return .shift; case .control: return .control
-                      case .command: return .command; case .option: return .option }
+                      case .command: return .command; case .option: return .option; case .function: return .function }
     }
     var glyph: String {
-        switch self { case .shift: return "⇧"; case .control: return "⌃"; case .command: return "⌘"; case .option: return "⌥" }
+        switch self { case .shift: return "⇧"; case .control: return "⌃"; case .command: return "⌘"; case .option: return "⌥"
+                      case .function: return "fn" }
     }
     var name: String {
-        switch self { case .shift: return "Shift"; case .control: return "Control"; case .command: return "Command"; case .option: return "Option" }
+        switch self { case .shift: return "Shift"; case .control: return "Control"; case .command: return "Command"; case .option: return "Option"
+                      case .function: return "Globe" }
     }
 }
 
@@ -39,6 +41,7 @@ enum WheelKey: String, CaseIterable, Identifiable {
     }
     var flags: NSEvent.ModifierFlags { modifier.flags }
     var glyph: String { modifier.glyph }
+    static var keys: [WheelKey: Modifier] { Dictionary(uniqueKeysWithValues: allCases.map { ($0, $0.modifier) }) }
 
     /// Gives this wheel a key; whichever wheel had that key takes this wheel's old one.
     func assign(_ m: Modifier) {

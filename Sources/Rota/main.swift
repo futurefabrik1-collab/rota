@@ -2,8 +2,9 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
-// CLI:  Rota --list <files…> | --run <action-id> <files…> | --login-on | --login-off
+// CLI:  Rota --list <files…> | --run <action-id> <files…> | --selftest | --login-on | --login-off
 let args = CommandLine.arguments
+if args.count == 2, args[1] == "--selftest" { exit(SelfTest.run() ? 0 : 1) }
 if args.count == 2, args[1] == "--login-on" || args[1] == "--login-off" {
     do {
         if args[1] == "--login-on" { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
@@ -35,7 +36,7 @@ if args.count == 4, args[1] == "--settings-shot" {
     let host = NSHostingController(rootView: SettingsView(model: SettingsModel(onChange: {}), tab: Int(args[2]) ?? 0))
     let w = NSWindow(contentViewController: host)
     w.styleMask = [.titled]
-    w.setContentSize(NSSize(width: 680, height: 560))
+    w.setContentSize(SettingsWindow.size)
     w.setFrameOrigin(NSPoint(x: -6000, y: -6000))
     w.orderFrontRegardless()
     RunLoop.main.run(until: Date().addingTimeInterval(1.0))
@@ -95,9 +96,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.wheel.onPick = { [weak self] a, urls in self?.perform(a, urls) }
         watcher.start()
 
-        if !UserDefaults.standard.bool(forKey: "welcomed2") {
-            UserDefaults.standard.set(true, forKey: "welcomed2")
-            hud.show("Rota: drag files, tap ⇧ ⌃ ⌘ or ⌥", for: 5)
+        // Shown once, to new users and to everyone updating from before the gate.
+        if !UserDefaults.standard.bool(forKey: "welcomedGate") {
+            UserDefaults.standard.set(true, forKey: "welcomedGate")
+            hud.show("Rota · \(Gate.current.hint)", for: 6)
         }
     }
 
@@ -144,7 +146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func buildMenu() {
         let m = NSMenu()
-        m.addItem(withTitle: "Drag files, then tap a key:", action: nil, keyEquivalent: "").isEnabled = false
+        let gate = Gate.current.modifier.map { "hold \($0.glyph), " } ?? ""
+        m.addItem(withTitle: "Drag files, \(gate)then tap a key:", action: nil, keyEquivalent: "").isEnabled = false
         for k in WheelKey.allCases {
             m.addItem(withTitle: "   \(k.glyph)  \(k.title)", action: nil, keyEquivalent: "").isEnabled = false
         }

@@ -1,8 +1,10 @@
 # Rota
 
-A free, open-source radial file wheel for macOS. Start dragging files, tap a modifier key, drop onto a slice.
+A free, open-source radial file wheel for macOS. Start dragging files, hold **fn** (🌐), tap a modifier key, drop onto a slice.
 
-| Key | Wheel |
+Holding fn keeps everyday ⇧ ⌘ ⌃ ⌥ drags (copy, alias, select) from popping a wheel. Once a wheel is open, tap another key to swap wheels; it stays open until you let go of the mouse. Settings → General can make ⌥ or ⌃ the key to hold instead, or none at all.
+
+| fn + key | Wheel |
 |-----|-------|
 | ⇧ Shift | **Convert** — formats, social-media sizes (1:1, 4:5, 9:16, 16:9 …), favicon, ICNS, PDF ↔ Pages/Word, Keynote, Numbers |
 | ⌘ Command | **Tools** — compress, resize, rotate, cut out background, OCR, QR, join, trim, loudness, contact sheets, PDF merge/split/OCR |
@@ -33,6 +35,7 @@ Requires macOS 14+ and Xcode / Swift 5.9+.
 ```bash
 ./build.sh            # builds build/Rota.app
 ./build.sh --install  # also installs to ~/Applications and launches
+build/Rota.app/Contents/MacOS/Rota --selftest   # key handling, wheel layouts, screen edges
 ```
 
 ## Licence

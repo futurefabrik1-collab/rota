@@ -6,6 +6,7 @@ import SwiftUI
 
 final class SettingsWindow {
     static let shared = SettingsWindow()
+    static let size = NSSize(width: 680, height: 690)
     private var window: NSWindow?
     var onChange: (() -> Void)?
 
@@ -15,7 +16,7 @@ final class SettingsWindow {
             let w = NSWindow(contentViewController: host)
             w.title = "Rota Settings"
             w.styleMask = [.titled, .closable, .miniaturizable]
-            w.setContentSize(NSSize(width: 680, height: 560))
+            w.setContentSize(Self.size)
             w.isReleasedWhenClosed = false
             w.center()
             window = w
@@ -126,10 +127,15 @@ final class SettingsModel: ObservableObject {
     }
 
     // General
+    var gate: Gate {
+        get { Gate.current }
+        set { Gate.current = newValue; changed() }
+    }
     func modifier(for w: WheelKey) -> Modifier { w.modifier }
     func assign(_ m: Modifier, to w: WheelKey) { w.assign(m); changed() }
     func resetKeys() {
         WheelKey.allCases.forEach { UserDefaults.standard.removeObject(forKey: "modifier.\($0.rawValue)") }
+        Gate.current = Gate.current  // moves a wheel off the gate key again
         changed()
     }
 
@@ -166,7 +172,7 @@ struct SettingsView: View {
             GeneralTab(model: model).tabItem { Label("General", systemImage: "gearshape") }.tag(2)
         }
         .padding(16)
-        .frame(width: 680, height: 560)
+        .frame(width: SettingsWindow.size.width, height: SettingsWindow.size.height)
     }
 }
 
@@ -309,14 +315,23 @@ struct GeneralTab: View {
 
     var body: some View {
         Form {
-            Section("Keys — tap while dragging files") {
+            Section {
+                Picker("Hold while dragging", selection: Binding(get: { model.gate }, set: { model.gate = $0 })) {
+                    ForEach(Gate.allCases) { Text($0.label).tag($0) }
+                }
                 ForEach(WheelKey.allCases) { w in
                     Picker(w.title, selection: Binding(get: { model.modifier(for: w) }, set: { model.assign($0, to: w) })) {
-                        ForEach(Modifier.allCases) { m in Text("\(m.glyph)  \(m.name)").tag(m) }
+                        ForEach(Modifier.allCases.filter { $0 != model.gate.modifier }) { m in Text("\(m.glyph)  \(m.name)").tag(m) }
                     }
                 }
-                HStack { Spacer(); Button("Default Keys") { model.resetKeys() } }
-            }
+                HStack {
+                    Text(model.gate == .none ? "Any wheel key opens its wheel, so everyday ⇧ ⌘ ⌃ ⌥ drags can too."
+                                             : "\(model.gate.hint). Once a wheel is open, wheel keys swap it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Default Keys") { model.resetKeys() }
+                }
+            } header: { Text("Keys") }
             Section("Results") {
                 Toggle("Reveal results in Finder", isOn: Binding(get: { model.reveal }, set: { model.reveal = $0 }))
                 Toggle("Social formats: fit the whole picture over a blurred background (instead of cropping)",
@@ -324,17 +339,23 @@ struct GeneralTab: View {
             }
             Section("System") {
                 Toggle("Open Rota at login", isOn: Binding(get: { model.openAtLogin }, set: { model.openAtLogin = $0 }))
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(tools, id: \.0) { t in
-                        HStack(spacing: 6) {
-                            Image(systemName: Tools.has(t.0) ? "checkmark.circle.fill" : "xmark.circle")
-                                .foregroundStyle(Tools.has(t.0) ? .green : .orange)
-                            Text(t.0).font(.system(.body, design: .monospaced))
-                            Text("— \(t.1)").foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
+                        ForEach(0..<(tools.count + 1) / 2, id: \.self) { row in
+                            GridRow {
+                                ForEach(tools[(row * 2)..<min(row * 2 + 2, tools.count)], id: \.0) { t in
+                                    HStack(spacing: 6) {
+                                        Image(systemName: Tools.has(t.0) ? "checkmark.circle.fill" : "xmark.circle")
+                                            .foregroundStyle(Tools.has(t.0) ? .green : .orange)
+                                        Text(t.0).font(.system(.callout, design: .monospaced))
+                                        Text(t.1).foregroundStyle(.secondary)
+                                    }
+                                    .font(.callout)
+                                }
+                            }
                         }
-                        .font(.callout)
                     }
-                    Text("Missing tools: install with Homebrew, e.g. brew install ffmpeg webp pngquant qpdf ghostscript tesseract")
+                    Text("Missing helpers: brew install ffmpeg webp pngquant qpdf ghostscript tesseract")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
