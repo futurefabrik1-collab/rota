@@ -21,7 +21,8 @@ enum Tools {
             let p = "\(dir)/\(tool)"
             if FileManager.default.isExecutableFile(atPath: p) { return p }
         }
-        throw WheelError("\(tool) not found — install it with: brew install \(tool == "cwebp" ? "webp" : tool)")
+        let formula = ["cwebp": "webp", "gs": "ghostscript", "ffprobe": "ffmpeg"][tool] ?? tool
+        throw WheelError("\(tool) not found — install it with: brew install \(formula)")
     }
 
     static func has(_ tool: String) -> Bool { (try? path(tool)) != nil }

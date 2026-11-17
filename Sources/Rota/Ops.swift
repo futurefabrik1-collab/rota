@@ -289,10 +289,20 @@ enum ImgX {
     }
 
     static func collage(_ urls: [URL]) throws -> [URL] {
-        let sorted = urls.sorted(by: Finder.order)
-        let cols = Int(ceil(sqrt(Double(sorted.count))))
-        let rows = Int(ceil(Double(sorted.count) / Double(cols)))
         let cell: CGFloat = 900, gap: CGFloat = 24
+        let sorted = urls.sorted(by: Finder.order)
+        // Only readable images get a cell, so an unreadable one doesn't leave a hole.
+        let images = sorted.compactMap { u in
+            CGImageSourceCreateWithURL(u as CFURL, nil).flatMap {
+                CGImageSourceCreateThumbnailAtIndex($0, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: Int(cell)] as CFDictionary)
+            }
+        }
+        guard !images.isEmpty else { throw WheelError("No readable images") }
+        let cols = Int(ceil(sqrt(Double(images.count))))
+        let rows = Int(ceil(Double(images.count) / Double(cols)))
         let W = CGFloat(cols) * cell + CGFloat(cols + 1) * gap
         let H = CGFloat(rows) * cell + CGFloat(rows + 1) * gap
         guard let c = CGContext(data: nil, width: Int(W), height: Int(H), bitsPerComponent: 8, bytesPerRow: 0,
@@ -301,12 +311,7 @@ enum ImgX {
         c.setFillColor(.white)
         c.fill(CGRect(x: 0, y: 0, width: W, height: H))
         c.interpolationQuality = .high
-        for (i, u) in sorted.enumerated() {
-            guard let s = CGImageSourceCreateWithURL(u as CFURL, nil),
-                  let img = CGImageSourceCreateThumbnailAtIndex(s, 0, [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: Int(cell)] as CFDictionary) else { continue }
+        for (i, img) in images.enumerated() {
             let col = i % cols, row = i / cols
             let x0 = gap + CGFloat(col) * (cell + gap)
             let y0 = H - gap - cell - CGFloat(row) * (cell + gap)
@@ -462,7 +467,9 @@ enum PDFX {
         let base = src.deletingPathExtension().lastPathComponent
         let dir = Out.unique(src.deletingLastPathComponent(), "\(base) (pages)", "")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try Tools.run("qpdf", ["--split-pages", src.path, dir.appendingPathComponent("\(base)-%d.pdf").path])
+        do {
+            try Tools.run("qpdf", ["--split-pages", src.path, dir.appendingPathComponent("\(base)-%d.pdf").path])
+        } catch { try? FileManager.default.removeItem(at: dir); throw error }
         return [dir]
     }
 
@@ -520,7 +527,11 @@ enum Doc {
         case "html", "htm", "webarchive":
             return try onMain { try NSAttributedString(url: src, options: [:], documentAttributes: nil) }
         default:
-            return try NSAttributedString(url: src, options: [:], documentAttributes: nil)
+            // Name the format, so a damaged .docx fails instead of being read as plain text.
+            let types: [String: NSAttributedString.DocumentType] = ["docx": .officeOpenXML, "doc": .docFormat, "odt": .openDocument,
+                                                                    "rtf": .rtf, "rtfd": .rtfd]
+            let opts: [NSAttributedString.DocumentReadingOptionKey: Any] = types[src.ext].map { [.documentType: $0] } ?? [:]
+            return try NSAttributedString(url: src, options: opts, documentAttributes: nil)
         }
     }
 
