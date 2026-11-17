@@ -3,8 +3,8 @@ import QuartzCore
 
 /// Polls mouse/modifier state (no Accessibility permission needed). During a file drag, holding the
 /// gate (Settings > General, Fn by default) and tapping a wheel key opens that wheel; tapping another
-/// key swaps it (`Trigger.decide`). Idle, it only glances at the mouse button 4 times a second; it
-/// polls at 60 Hz only while the button is down.
+/// key swaps it. Idle, it only glances at the mouse button 4 times a second; it polls at 60 Hz only
+/// while the button is down.
 final class DragWatcher {
     /// urls is non-nil on the first key of a drag.
     var onKey: ((WheelKey, [URL]?, NSPoint) -> Void)?
@@ -13,10 +13,7 @@ final class DragWatcher {
     static let idleInterval = 0.25, dragInterval = 1.0 / 60
     private var timer: Timer?
     private let dragPB = NSPasteboard(name: .drag)
-    private var baseChange = 0
-    private var wasDown = false
-    private var lastFlags: NSEvent.ModifierFlags = []
-    private var current: WheelKey?
+    private var state = DragState()
 
     func start() { schedule(Self.idleInterval) }
 
@@ -29,36 +26,50 @@ final class DragWatcher {
     }
 
     private func tick() {
-        guard NSEvent.pressedMouseButtons & 1 != 0 else {
-            if wasDown { wasDown = false; onMouseUp?(); schedule(Self.idleInterval) }
-            // A drag that starts after this changes the count; a click without a drag doesn't.
-            baseChange = dragPB.changeCount
-            current = nil
-            lastFlags = []
-            return
+        let wasDown = state.down
+        let t = state.step(down: NSEvent.pressedMouseButtons & 1 != 0, flags: NSEvent.modifierFlags,
+                           dragCount: { dragPB.changeCount }, gate: { Gate.current }, keys: { WheelKey.keys })
+        if state.down != wasDown {
+            schedule(state.down ? Self.dragInterval : Self.idleInterval)
+            if !state.down { onMouseUp?() }
         }
-        if !wasDown { wasDown = true; schedule(Self.dragInterval) }
-
-        let flags = NSEvent.modifierFlags
-        guard Trigger.held(flags) != Trigger.held(lastFlags) else { return }
-        let t = Trigger.decide(flags, previous: lastFlags, gate: Gate.current, keys: WheelKey.keys, current: current)
         switch t {
-        case .none:
-            lastFlags = flags
-        case .swap(let key):
-            lastFlags = flags
-            current = key
-            onKey?(key, nil, NSEvent.mouseLocation)
+        case .none: break
+        case .swap(let key): onKey?(key, nil, NSEvent.mouseLocation)
         case .open(let key):
-            // Not a file drag (yet): keep lastFlags so the next tick asks again.
-            guard dragPB.changeCount != baseChange else { return }
-            let urls = dragPB.readObjects(forClasses: [NSURL.self],
-                                          options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-            lastFlags = flags
+            let urls = dragPB.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
             guard !urls.isEmpty else { return }
-            current = key
+            state.current = key
             onKey?(key, urls, NSEvent.mouseLocation)
         }
+    }
+}
+
+/// What the watcher remembers between polls. Pure, so `Rota --selftest` can replay whole drags.
+struct DragState {
+    var down = false
+    var lastFlags: NSEvent.ModifierFlags = []
+    /// The drag pasteboard's change count while the button was up: a file drag changes it.
+    var baseCount = 0
+    /// The wheel showing in this drag; the caller sets it once the drag's files are read.
+    var current: WheelKey?
+
+    /// One poll. Keys already held when the button goes down, or changed before the drag starts, are
+    /// spent: only a change during a file drag opens or swaps a wheel, as before the gate.
+    mutating func step(down now: Bool, flags: NSEvent.ModifierFlags, dragCount: () -> Int,
+                       gate: () -> Gate, keys: () -> [WheelKey: Modifier]) -> Trigger {
+        guard now else {
+            down = false; current = nil; lastFlags = flags
+            baseCount = dragCount()
+            return .none
+        }
+        guard down else { down = true; lastFlags = flags; return .none }
+        guard Trigger.held(flags) != Trigger.held(lastFlags) else { return .none }
+        defer { lastFlags = flags }
+        guard dragCount() != baseCount else { return .none }
+        let t = Trigger.decide(flags, previous: lastFlags, gate: gate(), keys: keys(), current: current)
+        if case .swap(let k) = t { current = k }
+        return t
     }
 }
 
@@ -106,8 +117,10 @@ final class WheelPanel: NSPanel {
     }
 
     func show(page: WheelPage, key: WheelKey, urls: [URL], at p: NSPoint) {
-        // Room for the largest of the four wheels, so a swap mid-drag stays on screen too.
-        let r = WheelKey.allCases.map { WheelView.outerRadius(Actions.page(for: $0, urls: urls)) }.max() ?? 0
+        // Room for the largest wheel, so a swap mid-drag stays on screen too. Places is left out unless
+        // it is the one showing: building it checks every folder on disk.
+        let pages = [page] + WheelKey.allCases.filter { $0 != .places && $0 != key }.map { Actions.page(for: $0, urls: urls) }
+        let r = pages.map(WheelView.outerRadius).max() ?? 0
         let screen = NSScreen.screens.first(where: { NSMouseInRect(p, $0.frame, false) }) ?? NSScreen.main
         setFrameOrigin(screen.map { Self.origin(centre: p, radius: r, in: $0.visibleFrame) }
                        ?? NSPoint(x: p.x - WheelView.size / 2, y: p.y - WheelView.size / 2))

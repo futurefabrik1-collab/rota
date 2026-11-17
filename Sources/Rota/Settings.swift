@@ -135,7 +135,6 @@ final class SettingsModel: ObservableObject {
     func assign(_ m: Modifier, to w: WheelKey) { w.assign(m); changed() }
     func resetKeys() {
         WheelKey.allCases.forEach { UserDefaults.standard.removeObject(forKey: "modifier.\($0.rawValue)") }
-        Gate.current = Gate.current  // moves a wheel off the gate key again
         changed()
     }
 
@@ -340,22 +339,19 @@ struct GeneralTab: View {
             Section("System") {
                 Toggle("Open Rota at login", isOn: Binding(get: { model.openAtLogin }, set: { model.openAtLogin = $0 }))
                 VStack(alignment: .leading, spacing: 6) {
-                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
-                        ForEach(0..<(tools.count + 1) / 2, id: \.self) { row in
-                            GridRow {
-                                ForEach(tools[(row * 2)..<min(row * 2 + 2, tools.count)], id: \.0) { t in
-                                    HStack(spacing: 6) {
-                                        Image(systemName: Tools.has(t.0) ? "checkmark.circle.fill" : "xmark.circle")
-                                            .foregroundStyle(Tools.has(t.0) ? .green : .orange)
-                                        Text(t.0).font(.system(.callout, design: .monospaced))
-                                        Text(t.1).foregroundStyle(.secondary)
-                                    }
-                                    .font(.callout)
-                                }
+                    LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                              alignment: .leading, spacing: 4) {
+                        ForEach(tools, id: \.0) { t in
+                            HStack(spacing: 6) {
+                                Image(systemName: Tools.has(t.0) ? "checkmark.circle.fill" : "xmark.circle")
+                                    .foregroundStyle(Tools.has(t.0) ? .green : .orange)
+                                Text(t.0).font(.system(.callout, design: .monospaced))
+                                Text(t.1).foregroundStyle(.secondary)
                             }
+                            .font(.callout)
                         }
                     }
-                    Text("Missing helpers: brew install ffmpeg webp pngquant qpdf ghostscript tesseract")
+                    Text("Missing helpers: brew install " + tools.map { Tools.formula($0.0) }.joined(separator: " "))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

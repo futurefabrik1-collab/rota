@@ -6,23 +6,16 @@ enum Gate: String, CaseIterable, Identifiable {
     case function, option, control, none
     var id: String { rawValue }
 
-    var modifier: Modifier? {
-        switch self { case .function: return .function; case .option: return .option
-                      case .control: return .control; case .none: return nil }
-    }
+    var modifier: Modifier? { Modifier(rawValue: rawValue) }
     var label: String { modifier.map { "\($0.glyph)  \($0.name)" } ?? "None" }
 
     static var current: Gate {
         get { Gate(rawValue: UserDefaults.standard.string(forKey: "activationGate") ?? "") ?? .function }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: "activationGate")
-            for (w, m) in reassigned(WheelKey.keys, gate: newValue) where m != w.modifier {
-                UserDefaults.standard.set(m.rawValue, forKey: "modifier.\(w.rawValue)")
-            }
-        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "activationGate") }
     }
 
-    /// The gate key can't also open a wheel: the wheel on it moves to the key no wheel uses.
+    /// The gate key can't also open a wheel: the wheel saved on it uses the key no wheel uses instead.
+    /// Applied when the keys are read, so the saved keys never change.
     static func reassigned(_ keys: [WheelKey: Modifier], gate: Gate) -> [WheelKey: Modifier] {
         guard let g = gate.modifier, let w = keys.first(where: { $0.value == g })?.key,
               let free = Modifier.allCases.first(where: { m in m != g && !keys.values.contains(m) }) else { return keys }

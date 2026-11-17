@@ -53,16 +53,16 @@ enum Img {
                                     tmp.path, "-o", out.path])
             return
         }
-        guard let d = CGImageDestinationCreateWithURL(out as CFURL, type.identifier as CFString, 1, nil) else {
+        // Encoded in memory: a failed encode leaves no temporary file beside the source.
+        let data = NSMutableData()
+        guard let d = CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil) else {
             throw WheelError("Can't write \(type.preferredFilenameExtension ?? "image")")
         }
         var opts = props
         if let q = quality { opts[kCGImageDestinationLossyCompressionQuality] = q }
         CGImageDestinationAddImage(d, img, opts as CFDictionary)
-        guard CGImageDestinationFinalize(d) else {
-            try? FileManager.default.removeItem(at: out)
-            throw WheelError("Couldn't encode \(out.lastPathComponent)")
-        }
+        guard CGImageDestinationFinalize(d) else { throw WheelError("Couldn't encode \(out.lastPathComponent)") }
+        try data.write(to: out)
     }
 
     static func props(_ s: CGImageSource) -> [CFString: Any] {
@@ -167,7 +167,8 @@ enum Img {
         }
         guard let type = CGImageSourceGetType(s) else { throw WheelError("Unknown image type") }
         let out = Out.url(for: src, ext: src.ext, suffix: "clean")
-        guard let d = CGImageDestinationCreateWithURL(out as CFURL, type, 1, nil) else { throw WheelError("Can't write") }
+        var data = NSMutableData()
+        guard let d = CGImageDestinationCreateWithData(data, type, 1, nil) else { throw WheelError("Can't write") }
         // Lossless copy (no re-encode) with all metadata replaced by an empty set.
         let opts: [CFString: Any] = [
             kCGImageDestinationMetadata: CGImageMetadataCreateMutable(),
@@ -178,12 +179,14 @@ enum Img {
         var err: Unmanaged<CFError>?
         if !CGImageDestinationCopyImageSource(d, s, opts as CFDictionary, &err) {
             // Formats without lossless copy support: re-encode, dropping properties.
+            data = NSMutableData()
             guard let img = CGImageSourceCreateImageAtIndex(s, 0, nil),
-                  let d2 = CGImageDestinationCreateWithURL(out as CFURL, type, 1, nil) else { throw WheelError("Can't decode") }
+                  let d2 = CGImageDestinationCreateWithData(data, type, 1, nil) else { throw WheelError("Can't decode") }
             let o = props(s)[kCGImagePropertyOrientation].map { [kCGImagePropertyOrientation: $0] } ?? [:]
             CGImageDestinationAddImage(d2, img, o as CFDictionary)
             guard CGImageDestinationFinalize(d2) else { throw WheelError("Couldn't write \(out.lastPathComponent)") }
         }
+        try data.write(to: out)
         return [out]
     }
 

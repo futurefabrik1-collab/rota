@@ -36,18 +36,22 @@ enum WheelKey: String, CaseIterable, Identifiable {
     var defaultModifier: Modifier {
         switch self { case .convert: return .shift; case .tools: return .command; case .share: return .control; case .places: return .option }
     }
-    var modifier: Modifier {
+    private var saved: Modifier {
         Modifier(rawValue: UserDefaults.standard.string(forKey: "modifier.\(rawValue)") ?? "") ?? defaultModifier
     }
+    /// The key that opens this wheel: the saved one, unless the gate uses it (`Gate.reassigned`).
+    var modifier: Modifier { WheelKey.keys[self]! }
     var flags: NSEvent.ModifierFlags { modifier.flags }
     var glyph: String { modifier.glyph }
-    static var keys: [WheelKey: Modifier] { Dictionary(uniqueKeysWithValues: allCases.map { ($0, $0.modifier) }) }
+    static var keys: [WheelKey: Modifier] {
+        Gate.reassigned(Dictionary(uniqueKeysWithValues: allCases.map { ($0, $0.saved) }), gate: Gate.current)
+    }
 
     /// Gives this wheel a key; whichever wheel had that key takes this wheel's old one.
     func assign(_ m: Modifier) {
-        let previous = modifier
-        if let other = WheelKey.allCases.first(where: { $0 != self && $0.modifier == m }) {
-            UserDefaults.standard.set(previous.rawValue, forKey: "modifier.\(other.rawValue)")
+        let keys = WheelKey.keys
+        if let other = WheelKey.allCases.first(where: { $0 != self && keys[$0] == m }) {
+            UserDefaults.standard.set(keys[self]!.rawValue, forKey: "modifier.\(other.rawValue)")
         }
         UserDefaults.standard.set(m.rawValue, forKey: "modifier.\(rawValue)")
     }
@@ -418,10 +422,10 @@ enum Actions {
                each: PDFX.split),
         Action(id: "pdf.rotate", title: "Rotate", symbol: "rotate.right", detail: "Rotate all pages 90°", kinds: [.pdf],
                each: { src in let o = Out.url(for: src, ext: "pdf", suffix: "rotated")
-                   try Tools.run("qpdf", [src.path, "--rotate=+90", o.path]); return [o] }),
+                   try Tools.run("qpdf", [src.path, "--rotate=+90", o.path], allow: [3]); return [o] }),  // 3: done, with warnings
         Action(id: "pdf.reverse", title: "Reverse", symbol: "arrow.up.arrow.down", detail: "Reverse page order", kinds: [.pdf],
                each: { src in let o = Out.url(for: src, ext: "pdf", suffix: "reversed")
-                   try Tools.run("qpdf", [src.path, "--pages", ".", "z-1", "--", o.path]); return [o] }),
+                   try Tools.run("qpdf", [src.path, "--pages", ".", "z-1", "--", o.path], allow: [3]); return [o] }),
         Action(id: "pdf.ocr", title: "OCR", symbol: "text.viewfinder", detail: "Make scans searchable", kinds: [.pdf],
                each: PDFX.ocr),
         Action(id: "pdf.pdfa", title: "PDF/A", symbol: "archivebox", detail: "Archival PDF/A-2", kinds: [.pdf],

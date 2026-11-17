@@ -289,20 +289,10 @@ enum ImgX {
     }
 
     static func collage(_ urls: [URL]) throws -> [URL] {
-        let cell: CGFloat = 900, gap: CGFloat = 24
         let sorted = urls.sorted(by: Finder.order)
-        // Only readable images get a cell, so an unreadable one doesn't leave a hole.
-        let images = sorted.compactMap { u in
-            CGImageSourceCreateWithURL(u as CFURL, nil).flatMap {
-                CGImageSourceCreateThumbnailAtIndex($0, 0, [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: Int(cell)] as CFDictionary)
-            }
-        }
-        guard !images.isEmpty else { throw WheelError("No readable images") }
-        let cols = Int(ceil(sqrt(Double(images.count))))
-        let rows = Int(ceil(Double(images.count) / Double(cols)))
+        let cols = Int(ceil(sqrt(Double(sorted.count))))
+        let rows = Int(ceil(Double(sorted.count) / Double(cols)))
+        let cell: CGFloat = 900, gap: CGFloat = 24
         let W = CGFloat(cols) * cell + CGFloat(cols + 1) * gap
         let H = CGFloat(rows) * cell + CGFloat(rows + 1) * gap
         guard let c = CGContext(data: nil, width: Int(W), height: Int(H), bitsPerComponent: 8, bytesPerRow: 0,
@@ -311,7 +301,14 @@ enum ImgX {
         c.setFillColor(.white)
         c.fill(CGRect(x: 0, y: 0, width: W, height: H))
         c.interpolationQuality = .high
-        for (i, img) in images.enumerated() {
+        for (i, u) in sorted.enumerated() {
+            guard let s = CGImageSourceCreateWithURL(u as CFURL, nil),
+                  let img = CGImageSourceCreateThumbnailAtIndex(s, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: Int(cell)] as CFDictionary) else {
+                throw WheelError("Can't read \(u.lastPathComponent)")  // rather than leave a blank cell
+            }
             let col = i % cols, row = i / cols
             let x0 = gap + CGFloat(col) * (cell + gap)
             let y0 = H - gap - cell - CGFloat(row) * (cell + gap)
@@ -385,31 +382,31 @@ enum AV {
         return [o]
     }
 
-    private static func concatList(_ urls: [URL]) throws -> URL {
+    /// Joins the files in name order with ffmpeg's concat demuxer, which skips a damaged member without
+    /// failing: so every member is probed first, and a failed join leaves no partial file.
+    private static func concat(_ urls: [URL], to o: URL, _ args: [String]) throws {
+        for u in urls { _ = try Probe.duration(u) }
         let list = Out.temp("txt")
+        defer { try? FileManager.default.removeItem(at: list) }
         let body = urls.sorted(by: Finder.order)
             .map { "file '\($0.path.replacingOccurrences(of: "'", with: "'\\''"))'" }.joined(separator: "\n")
         try body.write(to: list, atomically: true, encoding: .utf8)
-        return list
+        do {
+            try Tools.run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list.path]
+                          + args + [o.path])
+        } catch { try? FileManager.default.removeItem(at: o); throw error }
     }
 
     static func joinVideo(_ urls: [URL]) throws -> [URL] {
-        let list = try concatList(urls)
-        defer { try? FileManager.default.removeItem(at: list) }
-        let first = urls.sorted(by: Finder.order)[0]
-        let o = Out.url(for: first, ext: "mp4", suffix: "joined")
-        try Tools.run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list.path]
-                      + Actions.h264 + [o.path])
+        let o = Out.url(for: urls.sorted(by: Finder.order)[0], ext: "mp4", suffix: "joined")
+        try concat(urls, to: o, Actions.h264)
         return [o]
     }
 
     static func joinAudio(_ urls: [URL]) throws -> [URL] {
-        let list = try concatList(urls)
-        defer { try? FileManager.default.removeItem(at: list) }
         let first = urls.sorted(by: Finder.order)[0]
         let o = Out.url(for: first, ext: first.ext, suffix: "joined")
-        try Tools.run("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list.path,
-                                 "-vn"] + codec(for: first.ext) + [o.path])
+        try concat(urls, to: o, ["-vn"] + codec(for: first.ext))
         return [o]
     }
 }
@@ -468,7 +465,7 @@ enum PDFX {
         let dir = Out.unique(src.deletingLastPathComponent(), "\(base) (pages)", "")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         do {
-            try Tools.run("qpdf", ["--split-pages", src.path, dir.appendingPathComponent("\(base)-%d.pdf").path])
+            try Tools.run("qpdf", ["--split-pages", src.path, dir.appendingPathComponent("\(base)-%d.pdf").path], allow: [3])
         } catch { try? FileManager.default.removeItem(at: dir); throw error }
         return [dir]
     }
@@ -527,11 +524,14 @@ enum Doc {
         case "html", "htm", "webarchive":
             return try onMain { try NSAttributedString(url: src, options: [:], documentAttributes: nil) }
         default:
-            // Name the format, so a damaged .docx fails instead of being read as plain text.
-            let types: [String: NSAttributedString.DocumentType] = ["docx": .officeOpenXML, "doc": .docFormat, "odt": .openDocument,
-                                                                    "rtf": .rtf, "rtfd": .rtfd]
-            let opts: [NSAttributedString.DocumentReadingOptionKey: Any] = types[src.ext].map { [.documentType: $0] } ?? [:]
-            return try NSAttributedString(url: src, options: opts, documentAttributes: nil)
+            var info: NSDictionary?
+            let a = try NSAttributedString(url: src, options: [:], documentAttributes: &info)
+            // AppKit reads anything it can't parse as plain text: for a Word, ODT or RTF file that means damaged.
+            if ["docx", "doc", "odt", "rtf"].contains(src.ext),
+               info?[NSAttributedString.DocumentAttributeKey.documentType.rawValue] as? String == NSAttributedString.DocumentType.plain.rawValue {
+                throw WheelError("\(src.lastPathComponent) is damaged or not a \(src.ext.uppercased()) document")
+            }
+            return a
         }
     }
 

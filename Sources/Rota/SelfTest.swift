@@ -48,6 +48,34 @@ enum SelfTest {
         check(Gate.reassigned(keys, gate: .none) == keys && Gate.reassigned(keys, gate: .function) == keys,
               "fn or no gate: the default keys stay")
 
+        // MARK: Whole drags: DragState over a run of polls (button down, keys, drag pasteboard count;
+        // the count moves from 0 to 1 when a file drag starts)
+        func replay(_ gate: Gate, _ polls: [(Bool, NSEvent.ModifierFlags, Int)]) -> [Trigger] {
+            var st = DragState()
+            return polls.compactMap { down, f, n in
+                let t = st.step(down: down, flags: f, dragCount: { n }, gate: { gate }, keys: { keys })
+                if case .open(let k) = t { st.current = k }  // the watcher does this once it has the files
+                return t == .none ? nil : t
+            }
+        }
+        check(replay(.none, [(false, [.option], 0), (true, [.option], 0), (true, [.option], 1), (true, [.option], 1)]).isEmpty,
+              "no gate: ⌥ held before the button goes down (a copy-drag) opens nothing, as before")
+        check(replay(.none, [(false, [], 0), (true, [], 0), (true, [.command], 0), (true, [.command], 1)]).isEmpty,
+              "no gate: ⌘ pressed before the drag starts is spent, as before")
+        check(replay(.none, [(false, [], 0), (true, [], 0), (true, [], 1), (true, [.shift], 1)]) == [.open(.convert)],
+              "no gate: ⇧ tapped during the drag → Convert")
+        check(replay(.function, [(false, [], 0), (true, [], 0), (true, [], 1), (true, [.function], 1),
+                                 (true, [.function, .shift], 1), (true, [.function, .command], 1)]) == [.open(.convert), .swap(.tools)],
+              "fn gate: drag, hold fn, tap ⇧ → Convert, then ⌘ → Tools")
+        check(replay(.function, [(false, [], 0), (true, [], 0), (true, [.function, .shift], 0), (true, [.function, .command], 0)]).isEmpty,
+              "fn gate: holding the button without a file drag opens nothing")
+        check(replay(.function, [(false, [], 0), (true, [], 0), (true, [], 1), (true, [.function, .shift], 1), (true, [.shift], 1),
+                                 (true, [], 1)]) == [.open(.convert)],
+              "fn gate: letting go of fn, then ⇧, leaves Convert open")
+        check(replay(.function, [(false, [], 0), (true, [], 0), (true, [], 1), (true, [.function, .shift], 1), (false, [], 1),
+                                 (true, [], 1), (true, [], 2), (true, [.command], 2)]) == [.open(.convert)],
+              "after mouse-up the next drag starts closed: ⌘ alone opens nothing")
+
         // MARK: Layout
         let v = WheelView(frame: NSRect(x: 0, y: 0, width: WheelView.size, height: WheelView.size))
         var notes = Set<String>()
@@ -76,8 +104,8 @@ enum SelfTest {
 
         // MARK: Screen edges
         let screens = [NSRect(x: 0, y: 0, width: 1440, height: 875), NSRect(x: -1920, y: 40, width: 1920, height: 1015)]
-        let r = WheelView.outerRadius(Actions.page(for: .convert, urls: [URL(fileURLWithPath: "/nonexistent/a.jpg")]))
-        for f in screens {
+        let jpg = WheelView.outerRadius(Actions.page(for: .convert, urls: [URL(fileURLWithPath: "/nonexistent/a.jpg")]))
+        for r in [jpg, 240 + WheelView.band] { for f in screens {
             for p in [NSPoint(x: f.minX, y: f.minY), NSPoint(x: f.maxX, y: f.maxY), NSPoint(x: f.minX, y: f.maxY),
                       NSPoint(x: f.maxX, y: f.minY), NSPoint(x: f.midX, y: f.minY + 3)] {
                 let o = WheelPanel.origin(centre: p, radius: r, in: f)
@@ -87,7 +115,7 @@ enum SelfTest {
             }
             let mid = NSPoint(x: f.midX, y: f.midY), o = WheelPanel.origin(centre: mid, radius: r, in: f)
             check(o.x + WheelView.size / 2 == mid.x && o.y + WheelView.size / 2 == mid.y, "mid-screen: centred on the pointer")
-        }
+        } }
 
         if !notes.isEmpty { print("note  smaller or shortened labels:", notes.sorted().joined(separator: ", ")) }
         print(failed == 0 ? "selftest passed" : "selftest FAILED: \(failed)")
