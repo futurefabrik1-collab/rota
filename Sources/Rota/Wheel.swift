@@ -117,10 +117,8 @@ final class WheelPanel: NSPanel {
     }
 
     func show(page: WheelPage, key: WheelKey, urls: [URL], at p: NSPoint) {
-        // Room for the largest wheel, so a swap mid-drag stays on screen too. Places is left out unless
-        // it is the one showing: building it checks every folder on disk.
-        let pages = [page] + WheelKey.allCases.filter { $0 != .places && $0 != key }.map { Actions.page(for: $0, urls: urls) }
-        let r = pages.map(WheelView.outerRadius).max() ?? 0
+        // Room for the largest of the four wheels, so a swap mid-drag stays on screen too.
+        let r = WheelKey.allCases.map { WheelView.outerRadius(Actions.page(for: $0, urls: urls)) }.max() ?? 0
         let screen = NSScreen.screens.first(where: { NSMouseInRect(p, $0.frame, false) }) ?? NSScreen.main
         setFrameOrigin(screen.map { Self.origin(centre: p, radius: r, in: $0.visibleFrame) }
                        ?? NSPoint(x: p.x - WheelView.size / 2, y: p.y - WheelView.size / 2))

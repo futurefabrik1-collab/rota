@@ -383,9 +383,11 @@ enum AV {
     }
 
     /// Joins the files in name order with ffmpeg's concat demuxer, which skips a damaged member without
-    /// failing: so every member is probed first, and a failed join leaves no partial file.
+    /// failing: so every member must have a stream ffprobe can read, and a failed join leaves no partial file.
     private static func concat(_ urls: [URL], to o: URL, _ args: [String]) throws {
-        for u in urls { _ = try Probe.duration(u) }
+        for u in urls where (try Probe.stdout(["-show_entries", "stream=index", "-of", "csv=p=0"], u)).isEmpty {
+            throw WheelError("Can't read \(u.lastPathComponent)")
+        }
         let list = Out.temp("txt")
         defer { try? FileManager.default.removeItem(at: list) }
         let body = urls.sorted(by: Finder.order)
